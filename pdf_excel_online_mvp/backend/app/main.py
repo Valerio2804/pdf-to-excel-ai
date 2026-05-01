@@ -24,11 +24,8 @@ from fastapi.middleware.cors import CORSMiddleware
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "https://pdf-to-excel-ai-7gxf.vercel.app",
-        "https://pdf-to-excel-ai-7gxf-jd5hndf7k-valerio2804s-projects.vercel.app",
-    ],
-    allow_credentials=False,
+    allow_origins=["*"],  # IMPORTANTE
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
