@@ -142,10 +142,9 @@ async def convert(file: UploadFile = File(...)):
 
     prompt = """
     Estrai da questo PDF scansionato i dati del DDT.
-    Rispondi SOLO in JSON valido con:
+    Rispondi SOLO in testo semplice leggibile, con:
     numero_ddt, data_ddt, mittente, destinatario, destinazione,
-    righe [{codice, descrizione, quantita, um}],
-    note
+    righe, note.
     """
 
     response = model.generate_content([
@@ -155,8 +154,18 @@ async def convert(file: UploadFile = File(...)):
 
     text = response.text
 
-    return {"result": text}
+    job_id = str(uuid4())
+    output_path = OUTPUT_DIR / f"{job_id}.xlsx"
 
+    result = parse_text(text, file.filename)
+    result["testo_ocr"] = text
+
+    build_excel(result, output_path)
+
+    return {
+        "job_id": job_id,
+        "download_url": f"/api/download/{job_id}"
+    }
 @app.get("/api/download/{job_id}")
 def download(job_id: str):
     xlsx_path = OUTPUT_DIR / f"{job_id}.xlsx"
