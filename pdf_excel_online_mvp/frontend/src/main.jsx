@@ -81,10 +81,10 @@ function App() {
             <h2>Excel pronto</h2>
           </div>
           <div className="grid">
-            <div><span>Numero documento</span><strong>{result.summary.numero_documento || 'Da verificare'}</strong></div>
-            <div><span>Data documento</span><strong>{result.summary.data_documento || 'Da verificare'}</strong></div>
-            <div><span>Totale probabile</span><strong>{result.summary.totale_probabile || 'Da verificare'}</strong></div>
-            <div><span>Righe rilevate</span><strong>{result.summary.righe_rilevate}</strong></div>
+            <div><span>Numero documento</span><strong>{result?.summary?.numero_documento || 'Da verificare'}</strong></div>
+            <div><span>Data documento</span><strong>{result?.summary?.data_documento || 'Da verificare'}</strong></div>
+            <div><span>Totale probabile</span><strong>{result?.summary?.totale_probabile || 'Da verificare'}</strong></div>
+            <div><span>Righe rilevate</span><strong>{result?.summary?.righe_rilevate || 'Da verificare'}</strong></div>
           </div>
           <a className="download" href={`${API_BASE}${result.download_url}`}>
             Scarica Excel
