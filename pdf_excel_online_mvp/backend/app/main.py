@@ -141,10 +141,55 @@ async def convert(file: UploadFile = File(...)):
     model = genai.GenerativeModel("gemini-2.5-flash")
 
     prompt = """
-    Estrai da questo PDF scansionato i dati del DDT.
-    Rispondi SOLO in testo semplice leggibile, con:
-    numero_ddt, data_ddt, mittente, destinatario, destinazione,
-    righe, note.
+    Analizza questo DDT scansionato come un operatore amministrativo esperto.
+
+Devi estrarre SOLO i dati stampati del documento.
+Ignora completamente:
+- scritte a mano
+- firme
+- timbri
+- segni di spunta
+- correzioni a penna
+- note manuali
+- rumore della scansione
+
+Rispondi SOLO in JSON valido, senza testo prima o dopo.
+
+Schema obbligatorio:
+
+{
+  "summary": {
+    "tipo_documento": "DDT",
+    "numero_documento": "",
+    "data_documento": "",
+    "mittente": "",
+    "destinatario": "",
+    "indirizzo_destinatario": "",
+    "totale_pezzi": 0,
+    "confidenza": 0
+  },
+  "righe": [
+    {
+      "codice": "",
+      "descrizione": "",
+      "ean": "",
+      "quantita": 0,
+      "confidenza": 0
+    }
+  ],
+  "campi_da_verificare": [],
+  "errori": []
+}
+
+Regole fondamentali:
+- leggi la tabella articoli riga per riga
+- non inventare dati mancanti
+- la quantità deve essere quella nella colonna Q.tà stampata
+- il totale_pezzi deve corrispondere al totale stampato nel documento
+- se la somma quantità non coincide con totale_pezzi, aggiungi un errore
+- usa formato data GG/MM/AAAA
+- confidenza da 0 a 100
+
     """
 
     response = model.generate_content([
