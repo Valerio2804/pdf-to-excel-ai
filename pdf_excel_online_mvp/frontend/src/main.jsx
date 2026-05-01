@@ -3,7 +3,7 @@ import { createRoot } from 'react-dom/client';
 import { Upload, FileSpreadsheet, CheckCircle2, AlertCircle, Loader2 } from 'lucide-react';
 import './style.css';
 
-const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000';
+const API_BASE = import.meta.env.VITE_API_BASE || 'https://pdf-to-excel-ai.onrender.com';
 
 function App() {
   const [file, setFile] = useState(null);
@@ -86,15 +86,15 @@ function App() {
             <div><span>Totale probabile</span><strong>{result?.summary?.totale_probabile || 'Da verificare'}</strong></div>
             <div><span>Righe rilevate</span><strong>{result?.summary?.righe_rilevate || 'Da verificare'}</strong></div>
           </div>
-          <a className="download" href={`${API_BASE}${result.download_url}`}>
+          <a className="download" href={`${API_BASE}${result?.download_url || ''}`}>
             Scarica Excel
           </a>
         </section>
       )}
 
-      <section className="note">
-        <strong>Nota:</strong> questa versione usa OCR open-source. Per qualità massima su scansioni difficili, si può collegare Azure Document Intelligence o Google Document AI.
-      </section>
+     <section className="note">
+         <strong>Nota:</strong> questa versione usa AI Vision per leggere PDF scansionati e generare Excel strutturati per DDT.
+     </section>
     </main>
   );
 }
