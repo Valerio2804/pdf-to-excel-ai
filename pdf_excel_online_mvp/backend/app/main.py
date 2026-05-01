@@ -9,6 +9,8 @@ import shutil
 
 from pdf2image import convert_from_path
 import pytesseract
+import google.generativeai as genai
+import os
 from PIL import Image, ImageOps, ImageFilter
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment
@@ -24,7 +26,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI(title="PDF Scan to Excel Online MVP")
-
+genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -133,41 +135,27 @@ def health():
 
 
 @app.post("/api/convert")
-async def convert_pdf(file: UploadFile = File(...)):
-    if not file.filename.lower().endswith(".pdf"):
-        raise HTTPException(status_code=400, detail="Carica un file PDF.")
+async def convert(file: UploadFile = File(...)):
+    contents = await file.read()
 
-    job_id = str(uuid4())
-    pdf_path = UPLOAD_DIR / f"{job_id}.pdf"
-    xlsx_path = OUTPUT_DIR / f"{job_id}.xlsx"
+    model = genai.GenerativeModel("gemini-1.5-flash")
 
-    with pdf_path.open("wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
+    prompt = """
+    Estrai da questo PDF scansionato i dati del DDT.
+    Rispondi SOLO in JSON valido con:
+    numero_ddt, data_ddt, mittente, destinatario, destinazione,
+    righe [{codice, descrizione, quantita, um}],
+    note
+    """
 
-    try:
-        pages = convert_from_path(str(pdf_path), dpi=300)
-        full_text = []
-        for page in pages:
-            processed = preprocess_image(page)
-            text = pytesseract.image_to_string(processed, lang="ita+eng")
-            full_text.append(text)
-        result = parse_text("\n".join(full_text), file.filename)
-        build_excel(result, xlsx_path)
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Errore elaborazione OCR: {exc}")
+    response = model.generate_content([
+        {"mime_type": "application/pdf", "data": contents},
+        prompt
+    ])
 
-    return {
-        "job_id": job_id,
-        "filename": file.filename,
-        "download_url": f"/api/download/{job_id}",
-        "summary": {
-            "numero_documento": result["numero_documento"],
-            "data_documento": result["data_documento"],
-            "totale_probabile": result["totale_probabile"],
-            "righe_rilevate": len(result["righe"]),
-        }
-    }
+    text = response.text
 
+    return {"result": text}
 
 @app.get("/api/download/{job_id}")
 def download(job_id: str):
