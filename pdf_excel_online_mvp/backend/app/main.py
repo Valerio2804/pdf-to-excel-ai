@@ -20,12 +20,15 @@ OUTPUT_DIR = BASE_DIR / "storage" / "outputs"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+
+app = FastAPI(title="PDF Scan to Excel Online MVP")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # IMPORTANTE
-    allow_credentials=True,
+    allow_origins=["*"],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
