@@ -197,21 +197,114 @@ Regole fondamentali:
         prompt
     ])
 
-    text = response.text
+    import json
 
-    job_id = str(uuid4())
-    output_path = OUTPUT_DIR / f"{job_id}.xlsx"
+text = response.text.strip()
 
-    result = parse_text(text, file.filename)
-    result["testo_ocr"] = text
+# rimuove eventuali blocchi ```json se Gemini li aggiunge
+text = text.replace("```json", "").replace("```", "").strip()
 
-    build_excel(result, output_path)
-
-    return {
-        "job_id": job_id,
-        "download_url": f"/api/download/{job_id}"
+try:
+    data = json.loads(text)
+except Exception:
+    data = {
+        "summary": {},
+        "righe": [],
+        "campi_da_verificare": ["JSON non valido da Gemini"],
+        "errori": [text]
     }
+
+job_id = str(uuid4())
+output_path = OUTPUT_DIR / f"{job_id}.xlsx"
+
+result = {
+    "file": file.filename,
+    "data_elaborazione": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    "summary": data.get("summary", {}),
+    "righe": data.get("righe", []),
+    "campi_da_verificare": data.get("campi_da_verificare", []),
+    "errori": data.get("errori", []),
+    "testo_ai": text
+}
+
+build_excel_enterprise(result, output_path)
+
+return {
+    "job_id": job_id,
+    "download_url": f"/api/download/{job_id}",
+    "summary": result["summary"],
+    "righe": result["righe"],
+    "campi_da_verificare": result["campi_da_verificare"],
+    "errori": result["errori"]
+}
 @app.get("/api/download/{job_id}")
+def build_excel_enterprise(result: dict, output_path: Path):
+    wb = Workbook()
+
+    ws = wb.active
+    ws.title = "Riepilogo"
+
+    header_fill = PatternFill("solid", fgColor="1F4E78")
+    header_font = Font(color="FFFFFF", bold=True)
+
+    def style_header(sheet):
+        for cell in sheet[1]:
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.alignment = Alignment(horizontal="center")
+
+    summary = result.get("summary", {})
+
+    ws.append(["Campo", "Valore"])
+    ws.append(["File", result.get("file", "")])
+    ws.append(["Data elaborazione", result.get("data_elaborazione", "")])
+    ws.append(["Tipo documento", summary.get("tipo_documento", "")])
+    ws.append(["Numero documento", summary.get("numero_documento", "")])
+    ws.append(["Data documento", summary.get("data_documento", "")])
+    ws.append(["Mittente", summary.get("mittente", "")])
+    ws.append(["Destinatario", summary.get("destinatario", "")])
+    ws.append(["Indirizzo destinatario", summary.get("indirizzo_destinatario", "")])
+    ws.append(["Totale pezzi", summary.get("totale_pezzi", "")])
+    ws.append(["Confidenza", summary.get("confidenza", "")])
+    style_header(ws)
+
+    ws_rows = wb.create_sheet("Righe_DDT")
+    ws_rows.append(["Codice", "Descrizione", "EAN", "Quantità", "Confidenza"])
+
+    for r in result.get("righe", []):
+        ws_rows.append([
+            r.get("codice", ""),
+            r.get("descrizione", ""),
+            r.get("ean", ""),
+            r.get("quantita", ""),
+            r.get("confidenza", "")
+        ])
+    style_header(ws_rows)
+
+    ws_check = wb.create_sheet("Campi_Da_Verificare")
+    ws_check.append(["Campo / Nota"])
+    for item in result.get("campi_da_verificare", []):
+        ws_check.append([str(item)])
+    style_header(ws_check)
+
+    ws_err = wb.create_sheet("Errori")
+    ws_err.append(["Errore"])
+    for item in result.get("errori", []):
+        ws_err.append([str(item)])
+    style_header(ws_err)
+
+    ws_ai = wb.create_sheet("Risposta_AI")
+    ws_ai.append(["JSON AI"])
+    ws_ai.append([result.get("testo_ai", "")])
+    style_header(ws_ai)
+
+    for sheet in wb.worksheets:
+        for col in sheet.columns:
+            max_len = max(len(str(cell.value or "")) for cell in col)
+            sheet.column_dimensions[get_column_letter(col[0].column)].width = min(max_len + 2, 80)
+        sheet.freeze_panes = "A2"
+
+    wb.save(output_path)
 def download(job_id: str):
     xlsx_path = OUTPUT_DIR / f"{job_id}.xlsx"
     if not xlsx_path.exists():
