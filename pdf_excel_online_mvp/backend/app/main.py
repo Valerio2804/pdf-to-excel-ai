@@ -138,7 +138,7 @@ def health():
 async def convert(file: UploadFile = File(...)):
     contents = await file.read()
 
-    model = genai.GenerativeModel("gemini-2.0-flash")
+    model = genai.GenerativeModel("gemini-2.5-flash")
 
     prompt = """
     Estrai da questo PDF scansionato i dati del DDT.
