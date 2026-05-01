@@ -20,11 +20,14 @@ OUTPUT_DIR = BASE_DIR / "storage" / "outputs"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-app = FastAPI(title="PDF Scan to Excel Online MVP", version="1.0.0")
+from fastapi.middleware.cors import CORSMiddleware
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "https://pdf-to-excel-ai-7gxf.vercel.app",
+        "https://pdf-to-excel-ai-7gxf-jd5hndf7k-valerio2804s-projects.vercel.app",
+    ],
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
