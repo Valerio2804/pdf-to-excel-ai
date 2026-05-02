@@ -5,10 +5,12 @@ from pathlib import Path
 from uuid import uuid4
 from datetime import datetime
 from typing import List
+from io import BytesIO
 import os
 import json
 
 import google.generativeai as genai
+from pypdf import PdfReader, PdfWriter
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment
 from openpyxl.utils import get_column_letter
@@ -31,8 +33,8 @@ app.add_middleware(
 )
 
 
-PROMPT_DDT = """
-Analizza questo DDT scansionato come un operatore amministrativo esperto.
+PROMPT_DDT_PAGE = """
+Analizza questa pagina di un DDT scansionato.
 
 Estrai SOLO i dati stampati.
 Ignora scritte a mano, firme, timbri, segni di spunta, correzioni a penna e rumore.
@@ -70,6 +72,7 @@ Regole:
 - non inventare dati
 - quantità sempre numerica
 - data in formato GG/MM/AAAA
+- se nella pagina non vedi testata o totale, lascia vuoto/0
 - confidenza da 0 a 100
 """
 
@@ -78,7 +81,14 @@ def clean_json_text(text: str) -> str:
     return text.replace("```json", "").replace("```", "").strip()
 
 
-def normalize_data(data: dict) -> dict:
+def to_int(value, default=0):
+    try:
+        return int(str(value).replace(",", ".").split(".")[0])
+    except Exception:
+        return default
+
+
+def normalize_page_data(data: dict) -> dict:
     summary = data.get("summary") or {}
     righe = data.get("righe") or []
 
@@ -87,35 +97,24 @@ def normalize_data(data: dict) -> dict:
         if not isinstance(row, dict):
             continue
 
-        try:
-            quantita = int(row.get("quantita") or 0)
-        except Exception:
-            quantita = 0
+        codice = str(row.get("codice") or "").strip()
+        descrizione = str(row.get("descrizione") or "").strip()
+        ean = str(row.get("ean") or "").strip()
+        quantita = to_int(row.get("quantita"), 0)
+        confidenza = to_int(row.get("confidenza"), 0)
 
-        try:
-            confidenza = int(row.get("confidenza") or 0)
-        except Exception:
-            confidenza = 0
+        if not codice and not descrizione and not ean:
+            continue
 
         rows.append({
-            "codice": str(row.get("codice") or "").strip(),
-            "descrizione": str(row.get("descrizione") or "").strip(),
-            "ean": str(row.get("ean") or "").strip(),
+            "codice": codice,
+            "descrizione": descrizione,
+            "ean": ean,
             "quantita": quantita,
             "confidenza": confidenza,
         })
 
-    try:
-        totale_pezzi = int(summary.get("totale_pezzi") or 0)
-    except Exception:
-        totale_pezzi = 0
-
-    try:
-        confidenza_summary = int(summary.get("confidenza") or 0)
-    except Exception:
-        confidenza_summary = 0
-
-    result = {
+    return {
         "summary": {
             "tipo_documento": summary.get("tipo_documento") or "DDT",
             "numero_documento": str(summary.get("numero_documento") or "").strip(),
@@ -123,27 +122,97 @@ def normalize_data(data: dict) -> dict:
             "mittente": str(summary.get("mittente") or "").strip(),
             "destinatario": str(summary.get("destinatario") or "").strip(),
             "indirizzo_destinatario": str(summary.get("indirizzo_destinatario") or "").strip(),
-            "totale_pezzi": totale_pezzi,
-            "confidenza": confidenza_summary,
+            "totale_pezzi": to_int(summary.get("totale_pezzi"), 0),
+            "confidenza": to_int(summary.get("confidenza"), 0),
         },
         "righe": rows,
         "campi_da_verificare": data.get("campi_da_verificare") or [],
         "errori": data.get("errori") or [],
     }
 
-    if not result["summary"]["numero_documento"]:
-        result["campi_da_verificare"].append("Numero documento mancante")
 
-    if not result["summary"]["data_documento"]:
-        result["campi_da_verificare"].append("Data documento mancante")
+def merge_pages(page_results: list) -> dict:
+    merged_summary = {
+        "tipo_documento": "DDT",
+        "numero_documento": "",
+        "data_documento": "",
+        "mittente": "",
+        "destinatario": "",
+        "indirizzo_destinatario": "",
+        "totale_pezzi": 0,
+        "confidenza": 0,
+    }
 
-    if not rows:
-        result["campi_da_verificare"].append("Nessuna riga articolo rilevata")
+    all_rows = []
+    warnings = []
+    errors = []
 
-    return result
+    for page_index, data in enumerate(page_results, start=1):
+        summary = data.get("summary", {})
+
+        for key in [
+            "tipo_documento",
+            "numero_documento",
+            "data_documento",
+            "mittente",
+            "destinatario",
+            "indirizzo_destinatario",
+        ]:
+            if not merged_summary.get(key) and summary.get(key):
+                merged_summary[key] = summary.get(key)
+
+        if summary.get("totale_pezzi"):
+            merged_summary["totale_pezzi"] = summary.get("totale_pezzi")
+
+        if summary.get("confidenza"):
+            merged_summary["confidenza"] = max(
+                merged_summary.get("confidenza", 0),
+                summary.get("confidenza", 0)
+            )
+
+        for row in data.get("righe", []):
+            row["pagina"] = page_index
+            all_rows.append(row)
+
+        for item in data.get("campi_da_verificare", []):
+            warnings.append(f"Pagina {page_index}: {item}")
+
+        for item in data.get("errori", []):
+            errors.append(f"Pagina {page_index}: {item}")
+
+    if not merged_summary["numero_documento"]:
+        warnings.append("Numero documento mancante")
+
+    if not merged_summary["data_documento"]:
+        warnings.append("Data documento mancante")
+
+    if not all_rows:
+        warnings.append("Nessuna riga articolo rilevata")
+
+    return {
+        "summary": merged_summary,
+        "righe": all_rows,
+        "campi_da_verificare": warnings,
+        "errori": errors,
+    }
 
 
-def build_excel_enterprise(result: dict, output_path: Path):
+def split_pdf_pages(pdf_bytes: bytes) -> list:
+    reader = PdfReader(BytesIO(pdf_bytes))
+    pages = []
+
+    for page in reader.pages:
+        writer = PdfWriter()
+        writer.add_page(page)
+
+        buffer = BytesIO()
+        writer.write(buffer)
+        pages.append(buffer.getvalue())
+
+    return pages
+
+
+def build_excel_rows_only(result: dict, output_path: Path):
     wb = Workbook()
     ws = wb.active
     ws.title = "Dettaglio_Righe"
@@ -153,6 +222,7 @@ def build_excel_enterprise(result: dict, output_path: Path):
 
     ws.append([
         "File",
+        "Pagina",
         "Numero Documento",
         "Data Documento",
         "Mittente",
@@ -170,6 +240,7 @@ def build_excel_enterprise(result: dict, output_path: Path):
     for row in righe:
         ws.append([
             result.get("file", ""),
+            row.get("pagina", ""),
             summary.get("numero_documento", ""),
             summary.get("data_documento", ""),
             summary.get("mittente", ""),
@@ -205,59 +276,74 @@ async def process_single_pdf(file: UploadFile) -> dict:
     contents = await file.read()
 
     try:
-        model = genai.GenerativeModel("gemini-2.5-flash")
-
-        response = model.generate_content([
-            {"mime_type": "application/pdf", "data": contents},
-            PROMPT_DDT
-        ])
-
-        text = clean_json_text(response.text)
-
-        try:
-            raw_data = json.loads(text)
-        except Exception:
-            raw_data = {
-                "summary": {},
-                "righe": [],
-                "campi_da_verificare": ["JSON non valido restituito da Gemini"],
-                "errori": [text],
-            }
-
-        data = normalize_data(raw_data)
-
-        job_id = str(uuid4())
-        output_path = OUTPUT_DIR / f"{job_id}.xlsx"
-
-        result = {
-            "file": file.filename,
-            "data_elaborazione": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "summary": data.get("summary", {}),
-            "righe": data.get("righe", []),
-            "campi_da_verificare": data.get("campi_da_verificare", []),
-            "errori": data.get("errori", []),
-            "testo_ai": json.dumps(data, ensure_ascii=False, indent=2),
-        }
-
-        build_excel_enterprise(result, output_path)
-
-        return {
-            "file": file.filename,
-            "status": "completed",
-            "job_id": job_id,
-            "download_url": f"/api/download/{job_id}",
-            "summary": result["summary"],
-            "righe": result["righe"],
-            "campi_da_verificare": result["campi_da_verificare"],
-            "errori": result["errori"],
-        }
-
+        pages = split_pdf_pages(contents)
     except Exception as e:
         return {
             "file": file.filename,
             "status": "error",
-            "error": str(e)
+            "error": f"Errore lettura PDF: {str(e)}"
         }
+
+    page_results = []
+    model = genai.GenerativeModel("gemini-2.5-flash")
+
+    for index, page_bytes in enumerate(pages, start=1):
+        try:
+            response = model.generate_content([
+                {"mime_type": "application/pdf", "data": page_bytes},
+                PROMPT_DDT_PAGE
+            ])
+
+            text = clean_json_text(response.text)
+
+            try:
+                raw_data = json.loads(text)
+            except Exception:
+                raw_data = {
+                    "summary": {},
+                    "righe": [],
+                    "campi_da_verificare": [f"JSON non valido pagina {index}"],
+                    "errori": [text],
+                }
+
+            page_results.append(normalize_page_data(raw_data))
+
+        except Exception as e:
+            page_results.append({
+                "summary": {},
+                "righe": [],
+                "campi_da_verificare": [],
+                "errori": [f"Errore AI pagina {index}: {str(e)}"],
+            })
+
+    merged = merge_pages(page_results)
+
+    job_id = str(uuid4())
+    output_path = OUTPUT_DIR / f"{job_id}.xlsx"
+
+    result = {
+        "file": file.filename,
+        "data_elaborazione": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "summary": merged.get("summary", {}),
+        "righe": merged.get("righe", []),
+        "campi_da_verificare": merged.get("campi_da_verificare", []),
+        "errori": merged.get("errori", []),
+        "pagine": len(pages),
+    }
+
+    build_excel_rows_only(result, output_path)
+
+    return {
+        "file": file.filename,
+        "status": "completed",
+        "job_id": job_id,
+        "download_url": f"/api/download/{job_id}",
+        "summary": result["summary"],
+        "righe": result["righe"],
+        "campi_da_verificare": result["campi_da_verificare"],
+        "errori": result["errori"],
+        "pagine": result["pagine"],
+    }
 
 
 @app.get("/health")
