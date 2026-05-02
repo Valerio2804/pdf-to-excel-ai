@@ -21,7 +21,7 @@ function safe(value, fallback = 'Da verificare') {
 }
 
 function App() {
-  const [file, setFile] = useState(null);
+  const [files, setFiles] = useState([]);
   const [documents, setDocuments] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -35,17 +35,16 @@ function App() {
   async function handleSubmit(e) {
     e.preventDefault();
 
-    if (!file) {
-      setError('Seleziona un PDF prima di continuare.');
+    if (!files.length) {
+      setError('Seleziona almeno un PDF prima di continuare.');
       return;
     }
 
     setLoading(true);
     setError('');
 
-    const tempId = crypto.randomUUID();
-    const pendingDoc = {
-      id: tempId,
+    const pendingDocs = files.map((file) => ({
+      id: crypto.randomUUID(),
       fileName: file.name,
       status: 'processing',
       createdAt: new Date().toLocaleString('it-IT'),
@@ -53,19 +52,22 @@ function App() {
       righe: [],
       campi_da_verificare: [],
       errori: [],
-      download_url: null
-    };
+      download_url: null,
+    }));
 
-    setDocuments((prev) => [pendingDoc, ...prev]);
-    setSelectedId(tempId);
+    setDocuments((prev) => [...pendingDocs, ...prev]);
+    setSelectedId(pendingDocs[0].id);
 
     const formData = new FormData();
-    formData.append('file', file);
+
+    files.forEach((file) => {
+      formData.append('files', file);
+    });
 
     try {
       const response = await fetch(`${API_BASE}/api/convert`, {
         method: 'POST',
-        body: formData
+        body: formData,
       });
 
       const data = await response.json();
@@ -74,29 +76,37 @@ function App() {
         throw new Error(data.detail || 'Errore durante la conversione.');
       }
 
-      const completedDoc = {
-        ...pendingDoc,
-        status: 'completed',
-        summary: data.summary || {},
-        righe: data.righe || [],
-        campi_da_verificare: data.campi_da_verificare || [],
-        errori: data.errori || [],
-        download_url: data.download_url || null,
-        raw: data
-      };
+      const completedDocs = (data.documents || []).map((doc, index) => ({
+        id: pendingDocs[index]?.id || doc.job_id || crypto.randomUUID(),
+        fileName: doc.file || pendingDocs[index]?.fileName || 'Documento',
+        status: doc.status || 'completed',
+        createdAt: pendingDocs[index]?.createdAt || new Date().toLocaleString('it-IT'),
+        summary: doc.summary || {},
+        righe: doc.righe || [],
+        campi_da_verificare: doc.campi_da_verificare || [],
+        errori: doc.errori || [],
+        download_url: doc.download_url || null,
+        error: doc.error || '',
+      }));
+
+      setDocuments((prev) => {
+        const pendingIds = new Set(pendingDocs.map((doc) => doc.id));
+        const oldDocs = prev.filter((doc) => !pendingIds.has(doc.id));
+        return [...completedDocs, ...oldDocs];
+      });
+
+      setSelectedId(completedDocs[0]?.id || null);
+      setFiles([]);
+    } catch (err) {
+      setError(err.message);
 
       setDocuments((prev) =>
-        prev.map((doc) => (doc.id === tempId ? completedDoc : doc))
-      );
-    } catch (err) {
-      setDocuments((prev) =>
         prev.map((doc) =>
-          doc.id === tempId
+          pendingDocs.some((p) => p.id === doc.id)
             ? { ...doc, status: 'error', error: err.message }
             : doc
         )
       );
-      setError(err.message);
     } finally {
       setLoading(false);
     }
@@ -106,10 +116,10 @@ function App() {
     <main className="page enterprise-page">
       <section className="hero enterprise-hero">
         <div className="badge">Enterprise DDT AI</div>
-        <h1>Da PDF scansionato a Excel gestionale</h1>
+        <h1>Da PDF scansionati a Excel gestionale</h1>
         <p>
-          Carica DDT, bolle e documenti logistici. L’AI Vision estrae testata,
-          righe articoli, quantità, campi incerti e genera Excel professionali.
+          Carica uno o più DDT, bolle e documenti logistici. L’AI Vision estrae
+          testata, righe articoli, quantità, campi incerti e genera Excel professionali.
         </p>
       </section>
 
@@ -148,18 +158,31 @@ function App() {
             <form onSubmit={handleSubmit}>
               <label className="dropzone">
                 <Upload size={42} />
-                <strong>{file ? file.name : 'Carica PDF scansionato'}</strong>
-                <span>Formato supportato: .pdf</span>
+                <strong>
+                  {files.length
+                    ? `${files.length} PDF selezionati`
+                    : 'Carica PDF scansionati'}
+                </strong>
+                <span>Formato supportato: .pdf — puoi selezionare più file</span>
                 <input
                   type="file"
                   accept="application/pdf"
-                  onChange={(e) => setFile(e.target.files?.[0] || null)}
+                  multiple
+                  onChange={(e) => setFiles(Array.from(e.target.files || []))}
                 />
               </label>
 
+              {files.length > 0 && (
+                <div className="selected-files">
+                  {files.map((file, index) => (
+                    <span key={`${file.name}-${index}`}>{file.name}</span>
+                  ))}
+                </div>
+              )}
+
               <button className="button" disabled={loading}>
                 {loading ? <Loader2 className="spin" size={20} /> : <FileSpreadsheet size={20} />}
-                {loading ? 'Elaborazione AI in corso...' : 'Converti in Excel'}
+                {loading ? 'Elaborazione AI in corso...' : 'Converti PDF in Excel'}
               </button>
             </form>
           </section>
@@ -181,6 +204,7 @@ function App() {
                 ) : (
                   <CheckCircle2 />
                 )}
+
                 <h2>
                   {selected.status === 'processing' && 'Documento in elaborazione'}
                   {selected.status === 'completed' && 'Documento elaborato'}
@@ -191,7 +215,7 @@ function App() {
               {selected.status === 'error' && (
                 <section className="message error">
                   <AlertCircle />
-                  <span>{selected.error}</span>
+                  <span>{selected.error || 'Errore durante elaborazione.'}</span>
                 </section>
               )}
 
@@ -281,12 +305,15 @@ function App() {
                         <ShieldCheck size={18} />
                         <h3>Campi da verificare</h3>
                       </div>
+
                       {(selected.campi_da_verificare || []).length === 0 ? (
                         <p className="muted">Nessun campo critico segnalato.</p>
                       ) : (
                         <ul>
                           {selected.campi_da_verificare.map((item, index) => (
-                            <li key={index}>{typeof item === 'string' ? item : JSON.stringify(item)}</li>
+                            <li key={index}>
+                              {typeof item === 'string' ? item : JSON.stringify(item)}
+                            </li>
                           ))}
                         </ul>
                       )}
@@ -297,12 +324,15 @@ function App() {
                         <AlertCircle size={18} />
                         <h3>Errori</h3>
                       </div>
+
                       {(selected.errori || []).length === 0 ? (
                         <p className="muted">Nessun errore rilevato.</p>
                       ) : (
                         <ul>
                           {selected.errori.map((item, index) => (
-                            <li key={index}>{typeof item === 'string' ? item : JSON.stringify(item)}</li>
+                            <li key={index}>
+                              {typeof item === 'string' ? item : JSON.stringify(item)}
+                            </li>
                           ))}
                         </ul>
                       )}
@@ -321,12 +351,12 @@ function App() {
                       className="secondary-button"
                       type="button"
                       onClick={() => {
-                        setFile(null);
+                        setFiles([]);
                         setError('');
                       }}
                     >
                       <RefreshCw size={18} />
-                      Nuovo documento
+                      Nuovo caricamento
                     </button>
                   </div>
                 </>
@@ -337,8 +367,8 @@ function App() {
       </section>
 
       <section className="note">
-        <strong>Enterprise mode:</strong> AI Vision, JSON strutturato, validazione campi,
-        righe DDT, storico sessione e download Excel gestionale.
+        <strong>Enterprise mode:</strong> AI Vision, caricamento multiplo, JSON strutturato,
+        validazione campi, righe DDT, storico sessione e download Excel gestionale.
       </section>
     </main>
   );
