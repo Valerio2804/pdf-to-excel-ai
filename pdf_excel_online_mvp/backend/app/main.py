@@ -4,6 +4,7 @@ from fastapi.responses import FileResponse
 from pathlib import Path
 from uuid import uuid4
 from datetime import datetime
+from typing import List
 import os
 import json
 
@@ -14,12 +15,8 @@ from openpyxl.utils import get_column_letter
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-UPLOAD_DIR = BASE_DIR / "storage" / "uploads"
 OUTPUT_DIR = BASE_DIR / "storage" / "outputs"
-
-UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-
 
 app = FastAPI(title="PDF to Excel AI Enterprise")
 
@@ -33,24 +30,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
 PROMPT_DDT = """
 Analizza questo DDT scansionato come un operatore amministrativo esperto.
 
-Devi estrarre SOLO i dati stampati del documento.
+Estrai SOLO i dati stampati.
+Ignora scritte a mano, firme, timbri, segni di spunta, correzioni a penna e rumore.
 
-Ignora completamente:
-- scritte a mano
-- firme
-- timbri
-- segni di spunta
-- correzioni a penna
-- note manuali
-- rumore della scansione
+Rispondi SOLO in JSON valido.
 
-Rispondi SOLO in JSON valido, senza markdown, senza testo prima o dopo.
-
-Schema obbligatorio:
+Schema:
 
 {
   "summary": {
@@ -76,29 +64,24 @@ Schema obbligatorio:
   "errori": []
 }
 
-Regole fondamentali:
+Regole:
 - leggi la tabella articoli riga per riga
-- non inventare dati mancanti
-- la quantità deve essere quella nella colonna Q.tà stampata
-- il totale_pezzi deve corrispondere al totale stampato nel documento
-- se la somma quantità non coincide con totale_pezzi, aggiungi un errore
-- usa formato data GG/MM/AAAA
+- non inventare dati
+- quantità sempre numerica
+- data in formato GG/MM/AAAA
 - confidenza da 0 a 100
 """
 
 
 def clean_json_text(text: str) -> str:
-    text = text.strip()
-    text = text.replace("```json", "")
-    text = text.replace("```", "")
-    return text.strip()
+    return text.replace("```json", "").replace("```", "").strip()
 
 
 def normalize_data(data: dict) -> dict:
     summary = data.get("summary") or {}
     righe = data.get("righe") or []
 
-    normalized_rows = []
+    rows = []
     for row in righe:
         if not isinstance(row, dict):
             continue
@@ -113,7 +96,7 @@ def normalize_data(data: dict) -> dict:
         except Exception:
             confidenza = 0
 
-        normalized_rows.append({
+        rows.append({
             "codice": str(row.get("codice") or "").strip(),
             "descrizione": str(row.get("descrizione") or "").strip(),
             "ean": str(row.get("ean") or "").strip(),
@@ -131,7 +114,7 @@ def normalize_data(data: dict) -> dict:
     except Exception:
         confidenza_summary = 0
 
-    normalized = {
+    result = {
         "summary": {
             "tipo_documento": summary.get("tipo_documento") or "DDT",
             "numero_documento": str(summary.get("numero_documento") or "").strip(),
@@ -142,28 +125,28 @@ def normalize_data(data: dict) -> dict:
             "totale_pezzi": totale_pezzi,
             "confidenza": confidenza_summary,
         },
-        "righe": normalized_rows,
+        "righe": rows,
         "campi_da_verificare": data.get("campi_da_verificare") or [],
         "errori": data.get("errori") or [],
     }
 
-    somma_quantita = sum(row["quantita"] for row in normalized_rows)
+    somma = sum(r["quantita"] for r in rows)
 
-    if totale_pezzi and somma_quantita and totale_pezzi != somma_quantita:
-        normalized["errori"].append(
-            f"Somma quantità righe ({somma_quantita}) diversa da totale pezzi ({totale_pezzi})"
+    if totale_pezzi and somma and totale_pezzi != somma:
+        result["errori"].append(
+            f"Somma quantità righe ({somma}) diversa da totale pezzi ({totale_pezzi})"
         )
 
-    if not normalized["summary"]["numero_documento"]:
-        normalized["campi_da_verificare"].append("Numero documento mancante")
+    if not result["summary"]["numero_documento"]:
+        result["campi_da_verificare"].append("Numero documento mancante")
 
-    if not normalized["summary"]["data_documento"]:
-        normalized["campi_da_verificare"].append("Data documento mancante")
+    if not result["summary"]["data_documento"]:
+        result["campi_da_verificare"].append("Data documento mancante")
 
-    if not normalized_rows:
-        normalized["campi_da_verificare"].append("Nessuna riga articolo rilevata")
+    if not rows:
+        result["campi_da_verificare"].append("Nessuna riga articolo rilevata")
 
-    return normalized
+    return result
 
 
 def build_excel_enterprise(result: dict, output_path: Path):
@@ -182,7 +165,6 @@ def build_excel_enterprise(result: dict, output_path: Path):
 
     ws = wb.active
     ws.title = "Riepilogo"
-
     ws.append(["Campo", "Valore"])
     ws.append(["File", result.get("file", "")])
     ws.append(["Data elaborazione", result.get("data_elaborazione", "")])
@@ -235,15 +217,13 @@ def build_excel_enterprise(result: dict, output_path: Path):
     wb.save(output_path)
 
 
-@app.get("/health")
-def health():
-    return {"status": "ok"}
-
-
-@app.post("/api/convert")
-async def convert(file: UploadFile = File(...)):
+async def process_single_pdf(file: UploadFile) -> dict:
     if not file.filename.lower().endswith(".pdf"):
-        raise HTTPException(status_code=400, detail="Carica solo file PDF.")
+        return {
+            "file": file.filename,
+            "status": "error",
+            "error": "File non PDF"
+        }
 
     contents = await file.read()
 
@@ -269,34 +249,56 @@ async def convert(file: UploadFile = File(...)):
 
         data = normalize_data(raw_data)
 
+        job_id = str(uuid4())
+        output_path = OUTPUT_DIR / f"{job_id}.xlsx"
+
+        result = {
+            "file": file.filename,
+            "data_elaborazione": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "summary": data.get("summary", {}),
+            "righe": data.get("righe", []),
+            "campi_da_verificare": data.get("campi_da_verificare", []),
+            "errori": data.get("errori", []),
+            "testo_ai": json.dumps(data, ensure_ascii=False, indent=2),
+        }
+
+        build_excel_enterprise(result, output_path)
+
+        return {
+            "file": file.filename,
+            "status": "completed",
+            "job_id": job_id,
+            "download_url": f"/api/download/{job_id}",
+            "summary": result["summary"],
+            "righe": result["righe"],
+            "campi_da_verificare": result["campi_da_verificare"],
+            "errori": result["errori"],
+        }
+
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Errore durante elaborazione AI: {str(e)}"
-        )
+        return {
+            "file": file.filename,
+            "status": "error",
+            "error": str(e)
+        }
 
-    job_id = str(uuid4())
-    output_path = OUTPUT_DIR / f"{job_id}.xlsx"
 
-    result = {
-        "file": file.filename,
-        "data_elaborazione": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "summary": data.get("summary", {}),
-        "righe": data.get("righe", []),
-        "campi_da_verificare": data.get("campi_da_verificare", []),
-        "errori": data.get("errori", []),
-        "testo_ai": json.dumps(data, ensure_ascii=False, indent=2),
-    }
+@app.get("/health")
+def health():
+    return {"status": "ok"}
 
-    build_excel_enterprise(result, output_path)
+
+@app.post("/api/convert")
+async def convert(files: List[UploadFile] = File(...)):
+    results = []
+
+    for file in files:
+        result = await process_single_pdf(file)
+        results.append(result)
 
     return {
-        "job_id": job_id,
-        "download_url": f"/api/download/{job_id}",
-        "summary": result["summary"],
-        "righe": result["righe"],
-        "campi_da_verificare": result["campi_da_verificare"],
-        "errori": result["errori"],
+        "count": len(results),
+        "documents": results
     }
 
 
