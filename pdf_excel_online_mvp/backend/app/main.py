@@ -30,15 +30,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
 PROMPT_DDT = """
 Analizza questo DDT scansionato come un operatore amministrativo esperto.
 
 Estrai SOLO i dati stampati.
 Ignora scritte a mano, firme, timbri, segni di spunta, correzioni a penna e rumore.
 
-Rispondi SOLO in JSON valido.
+Rispondi SOLO in JSON valido, senza markdown e senza testo extra.
 
-Schema:
+Schema obbligatorio:
 
 {
   "summary": {
@@ -130,13 +131,6 @@ def normalize_data(data: dict) -> dict:
         "errori": data.get("errori") or [],
     }
 
-    somma = sum(r["quantita"] for r in rows)
-
-    if totale_pezzi and somma and totale_pezzi != somma:
-        result["errori"].append(
-            f"Somma quantità righe ({somma}) diversa da totale pezzi ({totale_pezzi})"
-        )
-
     if not result["summary"]["numero_documento"]:
         result["campi_da_verificare"].append("Numero documento mancante")
 
@@ -151,69 +145,52 @@ def normalize_data(data: dict) -> dict:
 
 def build_excel_enterprise(result: dict, output_path: Path):
     wb = Workbook()
+    ws = wb.active
+    ws.title = "Dettaglio_Righe"
 
     header_fill = PatternFill("solid", fgColor="1F4E78")
     header_font = Font(color="FFFFFF", bold=True)
 
-    def style_header(sheet):
-        for cell in sheet[1]:
-            cell.fill = header_fill
-            cell.font = header_font
-            cell.alignment = Alignment(horizontal="center")
+    ws.append([
+        "File",
+        "Numero Documento",
+        "Data Documento",
+        "Mittente",
+        "Destinatario",
+        "Codice",
+        "Descrizione",
+        "EAN",
+        "Quantità",
+        "Confidenza"
+    ])
 
     summary = result.get("summary", {})
+    righe = result.get("righe", [])
 
-    ws = wb.active
-    ws.title = "Riepilogo"
-    ws.append(["Campo", "Valore"])
-    ws.append(["File", result.get("file", "")])
-    ws.append(["Data elaborazione", result.get("data_elaborazione", "")])
-    ws.append(["Tipo documento", summary.get("tipo_documento", "")])
-    ws.append(["Numero documento", summary.get("numero_documento", "")])
-    ws.append(["Data documento", summary.get("data_documento", "")])
-    ws.append(["Mittente", summary.get("mittente", "")])
-    ws.append(["Destinatario", summary.get("destinatario", "")])
-    ws.append(["Indirizzo destinatario", summary.get("indirizzo_destinatario", "")])
-    ws.append(["Totale pezzi", summary.get("totale_pezzi", "")])
-    ws.append(["Confidenza", summary.get("confidenza", "")])
-    style_header(ws)
-
-    ws_rows = wb.create_sheet("Righe_DDT")
-    ws_rows.append(["Codice", "Descrizione", "EAN", "Quantità", "Confidenza"])
-
-    for row in result.get("righe", []):
-        ws_rows.append([
+    for row in righe:
+        ws.append([
+            result.get("file", ""),
+            summary.get("numero_documento", ""),
+            summary.get("data_documento", ""),
+            summary.get("mittente", ""),
+            summary.get("destinatario", ""),
             row.get("codice", ""),
             row.get("descrizione", ""),
             row.get("ean", ""),
             row.get("quantita", ""),
-            row.get("confidenza", ""),
+            row.get("confidenza", "")
         ])
-    style_header(ws_rows)
 
-    ws_check = wb.create_sheet("Campi_Da_Verificare")
-    ws_check.append(["Campo / Nota"])
-    for item in result.get("campi_da_verificare", []):
-        ws_check.append([str(item)])
-    style_header(ws_check)
+    for cell in ws[1]:
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = Alignment(horizontal="center")
 
-    ws_errors = wb.create_sheet("Errori")
-    ws_errors.append(["Errore"])
-    for item in result.get("errori", []):
-        ws_errors.append([str(item)])
-    style_header(ws_errors)
+    for col in ws.columns:
+        max_len = max(len(str(cell.value or "")) for cell in col)
+        ws.column_dimensions[get_column_letter(col[0].column)].width = min(max_len + 2, 80)
 
-    ws_ai = wb.create_sheet("Risposta_AI")
-    ws_ai.append(["JSON AI"])
-    ws_ai.append([result.get("testo_ai", "")])
-    style_header(ws_ai)
-
-    for sheet in wb.worksheets:
-        for col in sheet.columns:
-            max_len = max(len(str(cell.value or "")) for cell in col)
-            sheet.column_dimensions[get_column_letter(col[0].column)].width = min(max_len + 2, 80)
-        sheet.freeze_panes = "A2"
-
+    ws.freeze_panes = "A2"
     wb.save(output_path)
 
 
